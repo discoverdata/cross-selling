@@ -1,0 +1,370 @@
+---
+title: "Association rule mining"
+output:
+  html_notebook: 
+    code_folding: hide
+    fig_height: 10
+    fig_width: 10
+    number_section: yes
+    theme: default
+    toc: yes
+    toc_collapsed: yes
+    toc_depth: 4
+    toc_float: yes
+---
+
+```{r project_defination}
+###########################################################################
+ #
+ # Assocaition analysis project using R
+ #
+ # Building Recommender System
+ # A step step approach to build Association Rule Mining
+ #
+ # Script:
+ # A simple experiment to find support and confidence values
+ #
+ #
+ # Varun Khanna
+ ###########################################################################
+```
+
+# Introduction 
+
+While Piatetsky-Shapiro and Frawley [ [1] ](https://mitpress.mit.edu/books/knowledge-discovery-databases) define **association rule mining (ARM)** as the general problem of finding recurrent patterns in data historically ARM or **Market basket analysis (MBA)**  has been used to find associations and co-occurrences of different objects in a database of a sales transaction, typically of a supermarket data. 
+
+## Definations
+
+An association rule is composed of two parts, an antecedent (head) and a consequent (body), and is usually denoted as antecedent -> consequent, where the presence of an antecedent in a database implies to some extent, the presence of the consequent. To determine the extent of this implication, two measures called *support*, *confidence* and *lift* are most commonly used.
+
+**Support:** The value of *support* for a rule tells us in how many instances (rows or records) the rule (both antecedent and consequent) can be observed, usually as a fraction of the total number of instances. 
+
+**Confidence:** The value of *confidence* of the rule tells us what percentage of records containing the antecedent also contains the consequent of the rule. *Confidence* gives us an idea of the strength of the influence that an antecedent has on the presence of a consequent of the rule.
+
+**Lift:** The value of *lift* measures how many times A and B occur together, more often than expected if they were statistically independent. Rules with *lift* values greater than 1 are considered more effective. 
+
+## Example
+
+```{r table, warning=FALSE, message=FALSE}
+tabl <- "An example Boolean matrix and association rules
+
+-------------------------------------
+|Category   |   X   |   Y   |   Z   |
+|-----------|:-----:|:-----:|:-----:|
+|A. Example |   1   |   1   |   1   |
+|of         |   0   |   1   |   1   |
+|transaction|   1   |   0   |   1   |   
+|           |   1   |   1   |   0   |
+|           |   1   |   1   |   1   |
+|           |   1   |   1   |   1   |
+-------------------------------------
+|B. Example | A -> C|Support|Confide|
+|of         |X,Y-> Z|  3/6  |   3/4 |  
+|assocition |X-> Y,Z|  3/6  |   3/5 |
+|rules      |       |       |       |
+-------------------------------------
+"
+cat(tabl)
+```
+
+# Problem statement
+
+You are a Data scientist in an FMCG company. The marketing department has approached you to help boost their sales as they plan a campaign on a large scale to promote sales. One aspect of this campaign is *cross-selling* strategy. The marketing manager wants to know **what items or products tend to go together and recommendation of Top N product associations.**
+
+## What is cross-selling
+
+**Cross-selling is a practice of inviting customers to buy related or complementary products** with the primary product. For example, a mouse or an external hard-drive can be cross-sold to a customer who buys a laptop. Often times products cross-sold to customers are those that would have been purchased by them anyways; by leading the customers to the right products at the right time, a store ensures they secure a sale. Moreover, cross-sold products are often bundled together which decreases the overall bill of customers than if bought separately. It also increases the overall revenue of the store.
+
+The **key for a business is to understand what are their customers need and responding with the product and services that truly meet those demands**.
+
+# Association rule mining
+
+The association rule mining is a **perfect tool** for this kind of analysis. It can tell **what kind of items customers frequently buy together**, generating a set of rules called association rules by analyzing the historical transactional data. Let us load the data and libraries. The data can be downloaded from [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/datasets/Online%20Retail). It is a transnational data set that contains all the transactions occurring between **01/12/2010** and **09/12/2011** for a UK-based and registered non-store online retail. The company mainly sells unique all-occasion gifts. Many customers of the company are wholesalers. 
+
+## Data description
+
+There are 541,909 rows and 8 columns
+
+1. **InvoiceNo:** A 6-digit integral number uniquely assigned to each transaction. 
+2. **StockCode:** Nominal, a 5-digit alphanumeric number uniquely assigned to each product.
+3. **Description:** The item purchased. Nominal
+4. **Quantity:** Numeric. The quantity of the item purchased.
+5. **InvoiceDate:** Invoice date and time of each transaction
+6. **UnitPrice:** Price of the item per unit in sterling.
+7. **CustomerID:** Nominal. Unique 5-digit integer uniquely assigned to each customer
+8. **Country:** Nominal. Name of the country where the transaction was carried out
+
+```{r load_libraries, message=FALSE, warning=FALSE}
+library("tidyr")
+library("dplyr")
+library("readr")
+library("arules")
+library("arulesViz")
+library("lubridate")
+library("RColorBrewer")
+library("kableExtra")
+library("DT")
+library("readxl")
+library("stringr")
+library("igraph")
+```
+
+```{r define_functions}
+# function 
+clean_strings <- function(df, column){
+    # Cleans the item description column 
+    # do multiple operations on a single column
+    # Args:
+    # df: name of the transactional data frame
+    # column: name of the column which needs to be cleaned
+    # Returns:
+    # clean df 
+    df <- df %>% mutate(Item = str_to_sentence(!!as.name(column)) %>%
+                          str_trim(., side = "both") %>% 
+                          str_squish(.) %>% str_remove_all(., "\\.") %>% 
+                          str_replace_all(., ",","\\"))
+    return(df)
+}
+
+# function
+get_txn <- function(file, columns, format = "single"){
+  # Returns transaction object for a given transactional data file
+  #
+  # Arg:
+  # file: transactional data file location
+  # columns: transaction id and item id column
+  # format: "single" or "basket"
+  #
+  # Returns:
+  # transaction object
+  transaction.obj <- read.transactions(file = file, 
+                                       format = format, sep = ",", 
+                                       cols = columns,
+                                       header = TRUE,
+                                       rm.duplicates = FALSE, 
+                                       quote = "", 
+                                       skip = 0, 
+                                       encoding = "unknown")
+  return(transaction.obj)
+}
+
+# function
+get_rules <- function(support, confidence, transactions){
+  # Generate apriori rules for user defined support and confidence levels
+  #
+  # Args:
+  # support : user defined support parameter
+  # confidence: user defined confidence parameter
+  # transactions: the transaction object
+  #
+  # Returns:
+  # rules object
+  parameters = list(
+    support = support, 
+    confidence = confidence, 
+    maxlen = 10, 
+    target = "rules")
+  
+  rules <- apriori(transactions, parameter = parameters)
+  return(rules)
+}
+
+# function
+explore_parameters <- function(transactions){
+  # Explore different combination of support and confidence values
+  #
+  # Args:
+  # transactions: the transaction object
+  #
+  # Returns:
+  # A df with no. of rules generated for a given support and confidence pair
+  support_values <- seq(from = 0.01, to = 0.1, by = 0.01)
+  confidence_values <- seq(from = 0.6, to = 1.0, by = 0.1)
+
+  support_confidence = expand.grid(support = support_values, confidence = confidence_values)
+  # Get the rules for various combination of support and confidence
+  rules_grid <- apply(support_confidence, 1, function(x) 
+    get_rules(support =  x['support'], confidence = x['confidence'],transactions = transaction.obj))
+
+  num_rules <- sapply(seq_along(rules_grid), function(i) length(labels(rules_grid[[i]])))
+
+  num_rules_df <- data.frame(support_confidence, num_rules)
+  return(num_rules_df)
+}
+
+# function
+get_plots <- function(num_rules_df)
+  {
+  # Plot the number of rules generated for 
+  # different support and confidence values
+  #
+  # Args:
+  # num_rules: data frame of number of rules for different support and confidence values
+  #
+  # Returns:
+  # None
+  
+  ggplot(num_rules_df, aes(x = support, y = num_rules)) + geom_line() + 
+    facet_wrap(~confidence) + ggtitle('Total number of rules of different support and confidence values')
+}
+
+# function
+find_rules <- function(support, confidence, topN = 20, transactions) {
+  # Generate and prune the rules for given support and confidence value
+  #
+  # Args:
+  # support: Min support value
+  # Confidence: Min confidence value
+  # topN: Number of rules to return
+  # transactions: the transaction object
+  #
+  # Returns:
+  # A df with the best set of rules with their support and confidence values
+  
+  all_rules <- get_rules(support = support, confidence = confidence, transactions = transaction.obj)
+  # Remove redundant rules
+  redundant_rules <- which(colSums(is.subset(all_rules, all_rules)) >1)
+  all_rules <- all_rules[-redundant_rules]
+  
+  rules_df <- data.frame(rules = labels(all_rules), all_rules@quality)
+  # Calculate other important measures
+  other_im <- interestMeasure(all_rules, transactions = transaction.obj)
+  
+  rules_df <- bind_cols(rules_df, other_im[,c("leverage","conviction")])
+  # Keep the topN rules
+  topNrules <- head(rules_df[order(-rules_df$confidence),], topN)
+  return(list(toprules = topNrules, allrules = all_rules))
+}
+
+# function
+plot_network <- function(cross_sell_rules){
+  # Plot the rules as graphs
+  #
+  # Args:
+  # cross_sell_rules: top N rules found
+  # Returns:
+  # None
+  edges <- cross_sell_rules %>% pull(rules) %>% 
+    str_split(., pattern = " => ") %>% 
+    unlist()
+  
+  g <- graph(edges = edges)
+  
+  plot(g, edge.arrow.size = 0.5, edge.width = 0.5, vertex.color = "skyblue", 
+       vertiex.size = 15, vertex.frame.color = "gray", vertex.label.color = "black", 
+       vertex.label.cex = 0.8, vertex.label.dist = 1.5, edge.curved = 0.2)
+}
+```
+
+```{r read_file, message=FALSE, warning=FALSE}
+# Read the files and assign correct data types
+online <- read_excel("OnlineRetail.xlsx")
+online <- online %>% select("CustomerID","InvoiceDate", "Description")
+online <- online %>% mutate(CustomerID = as.character(CustomerID))
+head(online) %>% kable() %>% kable_styling()
+```
+
+The given data is in a tabular format. Every row is a transaction with the *CustomerID*, *Date of transaction* and *Item purchased*. This form of representation is useful for association rule mining.
+
+## Explore the dataset
+
+1. Let us see how many unique items and customer ids are there in the dataset.
+
+```{r eda1}
+# remove rows where customer id or description column info is missing
+online <- online[complete.cases(online),]
+online <- clean_strings(online, 'Description') # Assign the clean description to item column
+online  %>% 
+  summarise(unique.items = n_distinct(Item), unique.customer_ids = n_distinct(CustomerID)) %>% 
+  kable() %>% kable_styling()
+
+data <- online %>% select(-c(Description, InvoiceDate))
+
+write.csv(data, file = "data.csv", quote = FALSE, row.names = FALSE)
+
+```
+
+2. Let us plot the frequency of top items in the dataset.
+
+```{r eda2, fig.height=6, fig.width=10}
+transaction.obj <- get_txn(file = "data.csv", columns = c("CustomerID", "Item"))
+itemFrequencyPlot(transaction.obj, topN = 15, type = "relative", col = brewer.pal(12, "Set3"), main = "Relative item frequency plot of top 15 items", horiz = TRUE)
+```
+
+This plot shows that *Regency cakestand 3 tier* and *White hanging heart t-light holder* have the most sales and present in over 20% and 19% of the sales respectively. So to increase the sales of *Pack of 72 retrospot cake cases* it can be placed alongside *Regency cakestand 3 tier*. 
+
+## Generate rules and explore parameters
+
+The next step is to apply the **apriori** algorithm to the transaction object created earlier. Let us explore different support values from 0.01 to 0.1 and confidence values from 0.6 to 1.0 and plot the total number of rules are generated for each combination.
+
+```{r ar1, include=FALSE}
+num_rules.df <- explore_parameters(transactions = transaction.obj)
+```
+
+```{r show_ar1}
+datatable(num_rules.df, rownames = FALSE, options = list(
+  pageLength = 25,
+  scrollX = TRUE,
+  sScrollY = "50vh",
+  scrollCollapse = TRUE,
+  autoWidth = FALSE,
+  columnDefs = list(list(width = '50px', targets = "_all")),
+  dom = 'Bfrtip'))
+```
+
+```{r plots_ar1}
+# Plot total num of rules for all combination of support and confidence values
+get_plots(num_rules.df)
+```
+
+## The cross-selling campaign 
+
+The next step is to choose a particular combination of support and confidence based on the previous plot. Let us keep the min support = 0.02 and confidence = 0.8. This means that the algorithm should consider items as frequent only if they appear in at least 2% of the transactions.
+
+```{r cross_selling, include=FALSE}
+rules <- find_rules(support = 0.02, confidence = 0.8, topN = 10, transactions = transaction.obj)
+#plot_network(rules$toprules)
+```
+
+## Visualizing Association rules
+
+Since there can be a potentially large number of rules generated based on the data, we need better ways to visualize the rules rather than reading the rules in a tabular format.
+
+### Scatter plot
+
+A simple way is to view all the rules is by scatter plot using the ```plot()``` command. It uses *support* and *confidence* on the axes. In addition, third measure *lift* is used by default to color the points.
+
+```{r ar3, message=FALSE, warning=FALSE}
+plot(rules$allrules)
+# the other way to color the plot in by the length of the rules
+plot(rules$allrules, method = "two-key plot")
+```
+
+### Interactive scatter plot
+
+```{r ar4, message=FALSE,warning=FALSE}
+plot(rules$allrules, engine = "htmlwidget")
+```
+
+### Network-based visualization
+
+Network-based visualization techniques help association rules using vertices and edges where vertices are labeled with item names, and item sets or rules are represented as a second set of vertices. Items are connected with the rules using arrows. Arrows pointing from item to rule correspond to LHS while an arrow from rule to an item indicates RHS. The size and color or vertices often represent interest measures.
+
+Network-based visualization is great to visualize rules however, it becomes congested as the number of rules increases. Let us select 10 rules having high *confidence* value.
+
+```{r ar5}
+topNrules <- head(rules$allrules, n = 10, by = "confidence")
+plot(topNrules, method = "graph", engine = "htmlwidget")
+```
+
+The first rule has a *lift* of 6.5, indicating that the two products are not independent. The rule has the *support* of 2.5% and confidence of 95.6%. We recommend that the retailer uses these two products in the cross-selling campaign because of the high probability that a customer picking up *Jumbo storage bag skulls and Lunch bag red retrospost* will also pick up *Jumbo bag red retrospot*. 
+
+Let us explain two other interest measures - leverage and conviction
+
+**Leverage:** It is a similar notion as *lift* however, instead of using a ratio, leverage uses the difference. It measures the difference in the probability of A and B appearing together in the dataset compared to what would have been expected if the A and B were statistically independent. In the case above the retailer can expect 2.1 times more sales by selling *Jumbo storage bag skulls, Lunch bag red retrospot* and the *Jumbo bag red retrospot*.
+
+**Conviction:** It gives the direction of the rule. Unlike lift, this measure is sensitive to the direction of the rule. For the rule above convictions hints that targeting customers of *Jumbo storage bag skulls, Lunch bag red retrospot* to cross-sell *Jumbo bag red retrospot* will yield more sales rather than another way round.
+
+# Conclusion
+
+Thus using measures like *lift*, *leverage*, *conviction* along with *support* and *confidence* we have provided all the empirical information to our marketing manager to design his cross-selling campaign. We also recommended the top 10 rules based on *confidence*. For a more intuitive visualization of the rules and to know what items can go together in a cross-selling campaign we made a network visualization of the rules. Based on the network we also recommend cross-selling **Jumbo bag red retrospot** as it bought by many customers. Using this information and other factors, the manager can now design his cross-selling campaigns. 
